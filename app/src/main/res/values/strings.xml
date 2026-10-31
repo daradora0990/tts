@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">TTS Читалка</string>
+    <string name="process_text_label">Читать в ТТС</string>
+    <string name="start_service">Запустить оверлей</string>
+    <string name="stop_service">Остановить оверлей</string>
+    <string name="permission_overlay_title">Требуется разрешение</string>
+    <string name="permission_overlay_desc">Предоставьте разрешение «Поверх других приложений», чтобы отображать плавающий виджет чтения.</string>
+</resources>
