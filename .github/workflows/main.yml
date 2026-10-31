@@ -28,6 +28,9 @@ jobs:
         run: |
           if [ -d "android_tts_overlay" ]; then cd android_tts_overlay; fi
           rm -f gradlew settings.gradle
+          mkdir -p ~/.gradle
+          printf "android.useAndroidX=true\nandroid.enableJetifier=true\n" > gradle.properties
+          printf "android.useAndroidX=true\nandroid.enableJetifier=true\n" > ~/.gradle/gradle.properties
           cat << 'EOF' > settings.gradle.kts
           pluginManagement {
               repositories {
@@ -46,7 +49,7 @@ jobs:
           rootProject.name = "AndroidTTS"
           include(":app")
           EOF
-          gradle assembleDebug --no-daemon
+          gradle assembleDebug -Pandroid.useAndroidX=true -Pandroid.enableJetifier=true --no-daemon  
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
