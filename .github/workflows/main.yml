@@ -22,12 +22,31 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.7'
+          cache-disabled: true
 
-      - name: Build Debug APK
+      - name: Fix settings.gradle.kts & Build APK
         run: |
           if [ -d "android_tts_overlay" ]; then cd android_tts_overlay; fi
-          rm -f gradlew
-          gradle assembleDebug --no-daemon
+          rm -f gradlew settings.gradle
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "AndroidTTS"
+          include(":app")
+          EOF
+          gradle assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
