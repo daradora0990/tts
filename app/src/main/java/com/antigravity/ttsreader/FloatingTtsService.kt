@@ -31,6 +31,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -48,6 +49,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -62,8 +64,19 @@ class FloatingTtsService : Service() {
         private const val NOTIFICATION_ID = 1001
 
         private const val TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
-        private const val WSS_URL =
-            "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=$TRUSTED_CLIENT_TOKEN"
+
+        // Генератор Sec-MS-GEC токена авторизации Microsoft Edge TTS
+        private fun generateSecMsGec(): String {
+            val ticks = (((System.currentTimeMillis() / 1000.0) + 11644473600.0).let { it - (it % 300.0) } * 1e7).toLong()
+            val strToHash = "${ticks}$TRUSTED_CLIENT_TOKEN"
+            val digest = MessageDigest.getInstance("SHA-256").digest(strToHash.toByteArray(Charsets.UTF_8))
+            return digest.joinToString("") { "%02X".format(it) }
+        }
+
+        private fun getWssUrl(): String {
+            val gec = generateSecMsGec()
+            return "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=$TRUSTED_CLIENT_TOKEN&Sec-MS-GEC=$gec&Sec-MS-GEC-Version=1-130.0.2849.68"
+        }
     }
 
     data class Chunk(val start: Int, val end: Int, val text: String)
@@ -249,7 +262,7 @@ class FloatingTtsService : Service() {
         }
     }
 
-    // --- State 1: Expanded Mini-Window (~260dp x 160dp) ---
+    // --- State 1: Expanded Mini-Window (~270dp) ---
     private fun buildExpandedUi() {
         expandedView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -258,7 +271,6 @@ class FloatingTtsService : Service() {
             layoutParams = FrameLayout.LayoutParams(dp(270), FrameLayout.LayoutParams.WRAP_CONTENT)
         }
 
-        // Top bar
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -282,7 +294,6 @@ class FloatingTtsService : Service() {
         btnVoiceToggle = createSmallBadge(if (voiceId.startsWith("kk")) "KZ" else "RU") {
             voiceId = if (voiceId.startsWith("kk")) "ru-RU-SvetlanaNeural" else "kk-KZ-AigulNeural"
             btnVoiceToggle.text = if (voiceId.startsWith("kk")) "KZ" else "RU"
-            // Re-trigger synthesis for active chunk
             speakCurrentChunk()
         }
         topBar.addView(btnVoiceToggle)
@@ -309,7 +320,6 @@ class FloatingTtsService : Service() {
 
         expandedView.addView(topBar)
 
-        // Center Area: Text & Counter
         val centerCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -336,7 +346,6 @@ class FloatingTtsService : Service() {
 
         expandedView.addView(centerCard)
 
-        // Bottom bar: Controls
         val bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -361,7 +370,7 @@ class FloatingTtsService : Service() {
         expandedView.addView(bottomBar)
     }
 
-    // --- State 2: Minimized Micro-Pill (~160dp x 44dp) ---
+    // --- State 2: Minimized Micro-Pill ---
     private fun buildMinimizedUi() {
         minimizedView = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -435,7 +444,6 @@ class FloatingTtsService : Service() {
         }
     }
 
-    // --- Touch Dragging & Smooth Edge Snapping ---
     private fun setupDragListener() {
         val touchListener = object : View.OnTouchListener {
             private var initialX = 0
@@ -452,9 +460,8 @@ class FloatingTtsService : Service() {
                         initialTouchX = event.rawX
                         initialTouchY = event.rawY
                         isDragging = false
-                        return false // allow child buttons to receive click
+                        return false
                     }
-
                     MotionEvent.ACTION_MOVE -> {
                         val dx = event.rawX - initialTouchX
                         val dy = event.rawY - initialTouchY
@@ -466,7 +473,6 @@ class FloatingTtsService : Service() {
                             return true
                         }
                     }
-
                     MotionEvent.ACTION_UP -> {
                         if (isDragging) {
                             val metrics = resources.displayMetrics
@@ -486,16 +492,11 @@ class FloatingTtsService : Service() {
                 return false
             }
         }
-
         rootContainer.setOnTouchListener(touchListener)
     }
 
-    // ---------------------------------------------------------------------
-    // TEXT CAPTURE: CLIPBOARD PASTE METHOD
-    // ---------------------------------------------------------------------
     private fun readClipboardAndLoad() {
         try {
-            // Temporarily remove FLAG_NOT_FOCUSABLE to allow clipboard reading on Android 10+
             windowParams.flags = windowParams.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
             windowManager.updateViewLayout(rootContainer, windowParams)
 
@@ -511,9 +512,8 @@ class FloatingTtsService : Service() {
                         }
                     }
                 } catch (e: Exception) {
-                    // Ignore clipboard security exceptions
+                    // Ignore
                 } finally {
-                    // Restore FLAG_NOT_FOCUSABLE
                     windowParams.flags = windowParams.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                     windowManager.updateViewLayout(rootContainer, windowParams)
                 }
@@ -524,9 +524,6 @@ class FloatingTtsService : Service() {
         }
     }
 
-    // ---------------------------------------------------------------------
-    // SMART CHUNKING & TEXT PROCESSING
-    // ---------------------------------------------------------------------
     private fun loadNewText(text: String) {
         rawText = text.trim()
         rebuildChunks()
@@ -586,9 +583,6 @@ class FloatingTtsService : Service() {
         counterTextView.text = "${currentIndex + 1} / ${chunks.size}"
     }
 
-    // ---------------------------------------------------------------------
-    // SPOKEN PUNCTUATION & KAZAKH STRESS
-    // ---------------------------------------------------------------------
     private fun prepareSpokenText(originalText: String): String {
         var text = originalText.trim()
         if (text.isEmpty()) return "."
@@ -597,7 +591,6 @@ class FloatingTtsService : Service() {
             val isKz = punctLanguage == "KZ" || voiceId.startsWith("kk")
             val dashWord = if (isKz) " сызықша " else " тире "
 
-            // Standalone dashes (keep compound words like әдіс-тәсілдері intact)
             text = text.replace(Regex("[\u2013\u2014]"), " $dashWord ")
             text = text.replace(Regex("""(?<=\s)-(?=\s)|(?<=\s)-|-(?=\s)"""), " $dashWord ")
 
@@ -629,13 +622,9 @@ class FloatingTtsService : Service() {
             text = text.replace(Regex("""\s+"""), " ").trim()
         }
 
-        // Kazakh Stress Fix: Always append a trailing period '.' for declarative intonation
         return text.trimEnd('.', ' ') + "."
     }
 
-    // ---------------------------------------------------------------------
-    // CHUNK NAVIGATION
-    // ---------------------------------------------------------------------
     private fun nextChunk() {
         if (chunks.isEmpty()) return
         if (currentIndex < chunks.size - 1) {
@@ -660,9 +649,6 @@ class FloatingTtsService : Service() {
         speakCurrentChunk()
     }
 
-    // ---------------------------------------------------------------------
-    // AUDIO SYNTHESIS & PLAYBACK (CACHE + MEDIAPLAYER)
-    // ---------------------------------------------------------------------
     private fun getCacheFile(spokenText: String, voice: String): File {
         val cacheDir = File(cacheDir, "tts_cache").apply { mkdirs() }
         val rawKey = "${spokenText.lowercase()}_${voice}_0%"
@@ -683,13 +669,16 @@ class FloatingTtsService : Service() {
             return
         }
 
-        // Synthesize in background
         serviceScope.launch {
             acquireWakeLockTransiently()
             try {
                 synthesizeToCache(spokenText, voiceId, file)
                 if (file.exists() && file.length() > 0) {
                     playAudioFile(file)
+                } else {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(applicationContext, "Ошибка синтеза сети", Toast.LENGTH_SHORT).show()
+                    }
                 }
             } finally {
                 releaseWakeLockIfNeeded()
@@ -742,16 +731,19 @@ class FloatingTtsService : Service() {
         }
     }
 
-    // --- Microsoft Edge TTS WebSocket Protocol ---
+    // --- Microsoft Edge TTS WebSocket Protocol с авторизацией Sec-MS-GEC ---
     private suspend fun fetchEdgeTtsAudio(text: String, voice: String): ByteArray {
         return withContext(Dispatchers.IO) {
             val outputStream = ByteArrayOutputStream()
-            val deferredResult = kotlinx.coroutines.CompletableDeferred<ByteArray>()
+            val deferredResult = CompletableDeferred<ByteArray>()
 
+            val wssUrl = getWssUrl()
             val request = Request.Builder()
-                .url(WSS_URL)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0")
+                .url(wssUrl)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0")
                 .header("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
+                .header("Pragma", "no-cache")
+                .header("Cache-Control", "no-cache")
                 .build()
 
             val webSocket = httpClient.newWebSocket(request, object : WebSocketListener() {
@@ -783,12 +775,16 @@ class FloatingTtsService : Service() {
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     if (text.contains("Path:turn.end")) {
                         webSocket.close(1000, "Done")
-                        deferredResult.complete(outputStream.toByteArray())
+                        if (!deferredResult.isCompleted) {
+                            deferredResult.complete(outputStream.toByteArray())
+                        }
                     }
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    deferredResult.complete(outputStream.toByteArray())
+                    if (!deferredResult.isCompleted) {
+                        deferredResult.complete(outputStream.toByteArray())
+                    }
                 }
             })
 
@@ -844,7 +840,7 @@ class FloatingTtsService : Service() {
     private fun acquireWakeLockTransiently() {
         try {
             if (wakeLock?.isHeld == false) {
-                wakeLock?.acquire(10000) // 10s max safety timeout
+                wakeLock?.acquire(10000)
             }
         } catch (e: Exception) {
             // Ignore
